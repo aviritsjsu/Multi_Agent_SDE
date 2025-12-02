@@ -11,10 +11,9 @@
   padding: 0 !important;
   overflow: hidden;
   border: none !important;
-  border-right: 3px solid #0d0d0d !important; // Subtle dark border on right edge
   box-sizing: border-box !important;
-  background-color: #1e1e1e !important;
-  position: relative;
+  // position: relative; // Ensure absolute positioning of child works relative to this
+  // background-color: #1e1e1e !important; // Match VS Code background to hide any potential gaps
 
   iframe {
     position: relative !important;

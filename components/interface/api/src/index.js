@@ -694,7 +694,6 @@ app.post("/api/memory/sessions", async (req, res) => {
         id,
         userId: user,
         metadata: metadata || {},
-        messageCount: metadata?.messageCount || metadata?.messages?.length || 0,
         updatedAt: new Date().toISOString(),
         createdAt: new Date().toISOString()
       });
@@ -719,21 +718,9 @@ app.put("/api/memory/sessions/:sessionId", async (req, res) => {
     const { metadata, userId } = req.body;
 
     if (agentService.memory.store.updateSession) {
-      // Get existing session to preserve createdAt
-      let existingCreatedAt = null;
-      if (agentService.memory.store.db?.collection) {
-        const existingDoc = await agentService.memory.store.db.collection('sessions').doc(sessionId).get();
-        if (existingDoc.exists) {
-          existingCreatedAt = existingDoc.data().createdAt;
-        }
-      }
-
       const updateData = {
         metadata: metadata || {},
-        messageCount: metadata?.messageCount || metadata?.messages?.length || 0,
-        updatedAt: new Date().toISOString(),
-        // Preserve original createdAt or set new one
-        createdAt: existingCreatedAt || new Date().toISOString()
+        updatedAt: new Date().toISOString()
       };
 
       // CRITICAL: Include userId if provided (for migration)
@@ -775,52 +762,6 @@ app.delete("/api/memory/sessions/:sessionId", async (req, res) => {
   }
 });
 
-
-// -----------------------------
-// 🔧 Fix Session Timestamps (utility endpoint)
-// -----------------------------
-app.post("/api/memory/sessions/fix-timestamps", async (req, res) => {
-  try {
-    if (!agentService.memory.store.db?.collection) {
-      return res.status(501).json({ error: "Only available for Firestore" });
-    }
-
-    const sessionsSnapshot = await agentService.memory.store.db.collection('sessions').get();
-    let fixed = 0;
-
-    for (const doc of sessionsSnapshot.docs) {
-      const data = doc.data();
-      const updates = {};
-
-      // Fix missing createdAt - use document ID timestamp or metadata
-      if (!data.createdAt) {
-        // Try to extract timestamp from session ID (session-1234567890)
-        const idMatch = doc.id.match(/session-(\d+)/);
-        if (idMatch) {
-          updates.createdAt = new Date(parseInt(idMatch[1])).toISOString();
-        } else {
-          // Fallback: stagger by 1 hour per session to differentiate
-          updates.createdAt = new Date(Date.now() - (fixed * 3600000)).toISOString();
-        }
-      }
-
-      // Fix missing updatedAt
-      if (!data.updatedAt) {
-        updates.updatedAt = data.createdAt || updates.createdAt || new Date().toISOString();
-      }
-
-      if (Object.keys(updates).length > 0) {
-        await doc.ref.set(updates, { merge: true });
-        fixed++;
-      }
-    }
-
-    res.json({ success: true, fixed, total: sessionsSnapshot.size });
-  } catch (error) {
-    console.error("Fix timestamps error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // -----------------------------
 // 🧠 Semantic Search Endpoint

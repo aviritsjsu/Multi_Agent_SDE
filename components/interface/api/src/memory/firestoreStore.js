@@ -96,7 +96,6 @@ export class FirestoreStore {
     }
 
     async addToolRun({ sessionId, name, input, output, success }) {
-        // Add to subcollection
         await this.db.collection('sessions').doc(sessionId).collection('tool_runs').add({
             name,
             input,
@@ -104,15 +103,6 @@ export class FirestoreStore {
             success,
             timestamp: new Date().toISOString()
         });
-        
-        // Increment tool run counter on session document for easy stats
-        const sessionRef = this.db.collection('sessions').doc(sessionId);
-        const sessionDoc = await sessionRef.get();
-        const currentCount = sessionDoc.exists ? (sessionDoc.data().toolRunCount || 0) : 0;
-        await sessionRef.set({
-            toolRunCount: currentCount + 1,
-            updatedAt: new Date().toISOString()
-        }, { merge: true });
     }
 
     async addMemory({ scope, key, text, meta }) {
@@ -166,73 +156,25 @@ export class FirestoreStore {
     // ============================================
 
     async getStats() {
-        try {
-            // Get all sessions and count messages + tool runs from document-level counters
-            const sessionsSnapshot = await this.db.collection('sessions').get();
-            let totalMessages = 0;
-            let totalToolRuns = 0;
-            
-            sessionsSnapshot.docs.forEach(doc => {
-                const data = doc.data();
-                // Count messages from doc level first, then metadata
-                if (data.messageCount) {
-                    totalMessages += data.messageCount;
-                } else if (data.metadata?.messageCount) {
-                    totalMessages += data.metadata.messageCount;
-                } else if (data.metadata?.messages?.length) {
-                    totalMessages += data.metadata.messages.length;
-                }
-                
-                // Count tool runs from doc level counter
-                if (data.toolRunCount) {
-                    totalToolRuns += data.toolRunCount;
-                }
-            });
+        const totalMessages = (await this.db.collection('sessions').get()).docs.reduce((acc, doc) => acc + (doc.data().messageCount || 0), 0); // Approximation or need subcollection count
+        const totalSessions = (await this.db.collection('sessions').count().get()).data().count;
+        const totalUsers = (await this.db.collection('users').count().get()).data().count;
+        const totalToolRuns = 0; // Need to implement tool run counting across all sessions
+        const totalMemories = (await this.db.collection('memories').count().get()).data().count;
 
-            const totalSessions = sessionsSnapshot.size;
-            
-            // Safe count for users
-            let totalUsers = 0;
-            try {
-                const usersCount = await this.db.collection('users').count().get();
-                totalUsers = usersCount.data().count || 0;
-            } catch (e) {
-                // Users collection may not exist
-                totalUsers = 0;
-            }
-            
-            // Safe count for memories
-            let totalMemories = 0;
-            try {
-                const memoriesCount = await this.db.collection('memories').count().get();
-                totalMemories = memoriesCount.data().count || 0;
-            } catch (e) {
-                // Memories collection may not exist
-                totalMemories = 0;
-            }
-
-            return {
-                summary: {
-                    totalMessages,
-                    totalSessions,
-                    totalUsers,
-                    totalToolRuns,
-                    totalMemories,
-                    successRate: totalToolRuns > 0 ? "100%" : "N/A"
-                },
-                tokens: { messagesWithTokens: 0, totalTokens: 0, averagePerMessage: 0 },
-                recentActivity: { sessionsLast7Days: totalSessions, messagesLast7Days: totalMessages },
-                memoryBreakdown: {}
-            };
-        } catch (error) {
-            console.error("getStats error:", error);
-            return {
-                summary: { totalMessages: 0, totalSessions: 0, totalUsers: 0, totalToolRuns: 0, totalMemories: 0, successRate: "N/A" },
-                tokens: { messagesWithTokens: 0, totalTokens: 0, averagePerMessage: 0 },
-                recentActivity: { sessionsLast7Days: 0, messagesLast7Days: 0 },
-                memoryBreakdown: {}
-            };
-        }
+        return {
+            summary: {
+                totalMessages,
+                totalSessions,
+                totalUsers,
+                totalToolRuns,
+                totalMemories,
+                successRate: "0%" // Placeholder
+            },
+            tokens: { messagesWithTokens: 0, totalTokens: 0, averagePerMessage: 0 },
+            recentActivity: { sessionsLast7Days: 0, messagesLast7Days: 0 },
+            memoryBreakdown: {}
+        };
     }
 
     async getSessionDetails(sessionId) {
@@ -279,13 +221,13 @@ export class FirestoreStore {
 
             return snapshot.docs.map(doc => ({
                 id: doc.id,
-                userId: doc.data().userId,
-                projectId: doc.data().projectId,
-                createdAt: doc.data().createdAt,
-                updatedAt: doc.data().updatedAt,
-                summary: doc.data().summary,
+                user_id: doc.data().userId,
+                project_id: doc.data().projectId,
+                created_at: doc.data().createdAt,
+                updated_at: doc.data().updatedAt,
+                summary_text: doc.data().summary,
                 metadata: doc.data().metadata,  // Include metadata for frontend
-                messageCount: doc.data().messageCount || doc.data().metadata?.messageCount || doc.data().metadata?.messages?.length || 0
+                messageCount: 0 // Expensive to calculate for list
             }));
         } catch (error) {
             console.error("Firestore listSessions error:", error);

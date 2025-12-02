@@ -5,8 +5,8 @@ import { ExternalContentPanel } from "./components/ExternalContentPanel/External
 
 export default function AppRoute() {
   return (
-    <div style={{ width: '100vw', height: '100%', display: 'flex', overflow: 'hidden', margin: 0, padding: 0 }}>
-      <PanelGroup direction="horizontal" autoSaveId="persistence" style={{ width: '100%', height: '100%', flex: 1, overflow: 'hidden', margin: 0, padding: 0 }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', overflow: 'hidden' }}>
+      <PanelGroup direction="horizontal" autoSaveId="persistence" style={{ width: '100%', height: '100%', flex: 1, overflow: 'hidden' }}>
         <Panel defaultSize={40} minSize={20} className="resizable-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
           <ChatPanel />
         </Panel>
