@@ -1,20 +1,29 @@
 import { IdePlaceholder } from "./IdePlaceholder";
 import { useTabs } from "../../TabContext";
+import { useChat } from "../../ChatContext";
 import "./ExternalContentPanel.scss";
 import { ExternalTabs } from "./ExternalTabs";
 import { useRef, useState, useEffect } from "react";
-import { Card, Button, ButtonGroup, Spinner } from "react-bootstrap";
+import { Card, Button, ButtonGroup, Dropdown, Spinner } from "react-bootstrap";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { toast } from "react-toastify";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
+import { apiFetch } from "../../utils/apiClient";
 
 export function ExternalContentPanel() {
   const { tabs, setActiveTab, activeTab, addTab, removeTab } = useTabs();
+  const { projectGcsPrefix, currentUser } = useChat();
+  console.log("Configured Workspace URL:", import.meta.env.VITE_WORKSPACE_URL);
   const iframeRef = useRef();
   const [viewMode, setViewMode] = useState('iframe'); // 'iframe' or 'code'
   const [fileContent, setFileContent] = useState('');
   const [language, setLanguage] = useState('javascript');
   const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
 
   // Detect language from URL
   const detectLanguage = (url) => {
@@ -76,6 +85,97 @@ export function ExternalContentPanel() {
     toast.success('✅ Code copied to clipboard');
   };
 
+  // Fetch projects on mount and when user changes
+  useEffect(() => {
+    const fetchProjects = async () => {
+      if (!currentUser) return;
+
+      setLoadingProjects(true);
+      try {
+        const res = await apiFetch(`/api/projects/list?userId=${currentUser.uid}`);
+        const data = await res.json();
+        setProjects(data.projects || []);
+      } catch (err) {
+        console.error('Failed to fetch projects:', err);
+      } finally {
+        setLoadingProjects(false);
+      }
+    };
+
+    fetchProjects();
+
+    // Refresh projects every 30 seconds
+    const interval = setInterval(fetchProjects, 30000);
+    return () => clearInterval(interval);
+  }, [currentUser]);
+
+  // Also refresh when projectGcsPrefix changes (new project created)
+  useEffect(() => {
+    if (projectGcsPrefix && currentUser) {
+      // Add small delay to allow GCS to finish writing
+      const timeout = setTimeout(async () => {
+        try {
+          const res = await apiFetch(`/api/projects/list?userId=${currentUser.uid}`);
+          const data = await res.json();
+          setProjects(data.projects || []);
+        } catch (err) {
+          console.error('Failed to refresh projects:', err);
+        }
+      }, 2000);
+      return () => clearTimeout(timeout);
+    }
+  }, [projectGcsPrefix, currentUser]);
+
+  const handleDownloadProject = async (projectPrefix) => {
+    if (!projectPrefix) return;
+    setDownloading(true);
+    try {
+      const res = await apiFetch(`/api/projects/files?prefix=${encodeURIComponent(projectPrefix)}`);
+      if (!res.ok) throw new Error(`Failed to fetch file list: ${res.statusText}`);
+      const { files } = await res.json();
+
+      if (!files || files.length === 0) {
+        throw new Error("No files found in project");
+      }
+
+      const zip = new JSZip();
+      const folderName = projectPrefix.split('/').filter(Boolean).pop() || 'project';
+
+      await Promise.all(files.map(async (file) => {
+        try {
+          const fileRes = await fetch(file.url);
+          if (!fileRes.ok) throw new Error(`Failed to fetch ${file.name}`);
+          const blob = await fileRes.blob();
+          zip.file(file.name, blob);
+        } catch (e) {
+          console.error(`Failed to download file ${file.name}:`, e);
+        }
+      }));
+
+      const content = await zip.generateAsync({ type: "blob" });
+      saveAs(content, `${folderName}.zip`);
+      toast.success('✅ Project downloaded successfully');
+    } catch (err) {
+      console.error("Download failed:", err);
+      toast.error('❌ Failed to download project: ' + err.message);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  // Auto-correct localhost workspace URLs to production
+  useEffect(() => {
+    const WORKSPACE_URL = import.meta.env.VITE_WORKSPACE_URL || "https://workspace-835319451022.us-central1.run.app";
+    if (activeTab && activeTab.includes("localhost") && activeTab.includes("8085")) {
+      console.log("Auto-correcting localhost Workspace URL to:", WORKSPACE_URL);
+      // We can't easily update the tab URL in place without modifying the context, 
+      // but we can force the iframe src to use the correct URL for this render.
+      if (iframeRef.current) {
+        iframeRef.current.src = WORKSPACE_URL;
+      }
+    }
+  }, [activeTab]);
+
   return (
     <div className="external-content-panel" style={{ width: '100%', height: '100%', overflow: 'hidden', margin: 0, padding: 0 }}>
       <div className="ecp-header" style={{ padding: '0.5rem 0.75rem' }}>
@@ -87,28 +187,77 @@ export function ExternalContentPanel() {
             onTabRemoval={removeTab}
             onRefreshClick={() => {
               if (viewMode === 'iframe' && iframeRef.current) {
-                const url = new URL(iframeRef.current.src);
-                url.searchParams.set("t", Date.now());
-                iframeRef.current.src = url.toString();
+                const WORKSPACE_URL = import.meta.env.VITE_WORKSPACE_URL || "https://workspace-835319451022.us-central1.run.app";
+                // If it's the workspace, force the correct URL on refresh
+                if (activeTab.includes("8085") || activeTab.includes("workspace")) {
+                  iframeRef.current.src = WORKSPACE_URL;
+                } else {
+                  const url = new URL(iframeRef.current.src);
+                  url.searchParams.set("t", Date.now());
+                  iframeRef.current.src = url.toString();
+                }
               }
             }}
           />
+          {projects.length > 0 && (
+            <ButtonGroup className="ms-2">
+              <Dropdown>
+                <Dropdown.Toggle
+                  variant="success"
+                  size="sm"
+                  disabled={downloading || loadingProjects}
+                >
+                  {downloading ? (
+                    <>
+                      <Spinner
+                        as="span"
+                        animation="border"
+                        size="sm"
+                        role="status"
+                        aria-hidden="true"
+                        className="me-1"
+                      />
+                      Downloading...
+                    </>
+                  ) : (
+                    <>📥 Download Project{projects.length > 1 ? ` (${projects.length})` : ''}</>
+                  )}
+                </Dropdown.Toggle>
+                <Dropdown.Menu>
+                  {projects.map((project, idx) => (
+                    <Dropdown.Item
+                      key={idx}
+                      onClick={() => handleDownloadProject(project.prefix)}
+                    >
+                      <div>
+                        <div><strong>{project.projectId}</strong></div>
+                        <small className="text-muted">
+                          {new Date(project.createdAt).toLocaleString()} • {project.fileCount} files
+                        </small>
+                      </div>
+                    </Dropdown.Item>
+                  ))}
+                </Dropdown.Menu>
+              </Dropdown>
+            </ButtonGroup>
+          )}
         </div>
       </div>
       {activeTab ? (
         viewMode === 'iframe' ? (
           <iframe
             ref={iframeRef}
-            style={{ 
-              flex: 1, 
-              width: '100%', 
-              height: '100%', 
+            style={{
+              flex: 1,
+              width: '100%',
+              height: '100%',
               border: 'none',
               margin: 0,
               padding: 0,
               display: 'block'
             }}
-            src={activeTab}
+            src={activeTab.includes("localhost") && activeTab.includes("8085") ? "https://workspace-835319451022.us-central1.run.app" : activeTab}
+            allow="clipboard-read; clipboard-write; cross-origin-isolated; local-fonts"
           />
         ) : (
           <div style={{ flex: 1, overflow: 'auto', background: '#1e1e1e', padding: '0' }}>
@@ -155,7 +304,7 @@ export function ExternalContentPanel() {
         )
       ) : (
         <IdePlaceholder
-          onLaunch={() => addTab("http://localhost:8085", "Workspace")}
+          onLaunch={() => addTab(import.meta.env.VITE_WORKSPACE_URL || "https://workspace-835319451022.us-central1.run.app", "Workspace")}
         />
       )}
     </div>

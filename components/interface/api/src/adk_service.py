@@ -30,23 +30,6 @@ SCRIPT = os.path.join(TARGET_FOLDER_PATH, "output.py")
 os.makedirs(TARGET_FOLDER_PATH, exist_ok=True)
 
 # ============================================================================
-# MCP TOOLSETS
-# ============================================================================
-filesystem_toolset = McpToolset(
-    connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="npx",
-            args=[
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                os.path.abspath(TARGET_FOLDER_PATH),
-            ],
-        )
-    )
-)
-
-
-# ============================================================================
 # EVENT EMITTER FOR STREAMING
 # ============================================================================
 def emit_event(event_type: str, data: Dict[str, Any]):
@@ -57,6 +40,24 @@ def emit_event(event_type: str, data: Dict[str, Any]):
 
 
 async def run_pipeline_async(user_message: str):
+
+    # ============================================================================
+    # Create MCP Toolset per request (prevents concurrency issues)
+    # Timeout increased to 30s for Cloud Run cold starts
+    # ============================================================================
+    filesystem_toolset = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(
+                command="npx",
+                args=[
+                    "-y",
+                    "@modelcontextprotocol/server-filesystem",
+                    os.path.abspath(TARGET_FOLDER_PATH),
+                ],
+            ),
+            timeout=30  # Increased from default 5s to 30s for Cloud Run
+        )
+    )
 
     # Create async in-memory session
     session_service = InMemorySessionService()

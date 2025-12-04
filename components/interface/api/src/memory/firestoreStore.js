@@ -156,10 +156,30 @@ export class FirestoreStore {
     // ============================================
 
     async getStats() {
-        const totalMessages = (await this.db.collection('sessions').get()).docs.reduce((acc, doc) => acc + (doc.data().messageCount || 0), 0); // Approximation or need subcollection count
-        const totalSessions = (await this.db.collection('sessions').count().get()).data().count;
+        // Get all sessions
+        const sessionsSnapshot = await this.db.collection('sessions').get();
+
+        // Count total messages across all sessions
+        let totalMessages = 0;
+        for (const sessionDoc of sessionsSnapshot.docs) {
+            const messageCount = await this.countMessages(sessionDoc.id);
+            totalMessages += messageCount;
+        }
+
+        const totalSessions = sessionsSnapshot.docs.length;
         const totalUsers = (await this.db.collection('users').count().get()).data().count;
-        const totalToolRuns = 0; // Need to implement tool run counting across all sessions
+
+        // Count tool runs across all sessions
+        let totalToolRuns = 0;
+        for (const sessionDoc of sessionsSnapshot.docs) {
+            const toolRunsSnapshot = await this.db.collection('sessions')
+                .doc(sessionDoc.id)
+                .collection('tool_runs')
+                .count()
+                .get();
+            totalToolRuns += toolRunsSnapshot.data().count;
+        }
+
         const totalMemories = (await this.db.collection('memories').count().get()).data().count;
 
         return {
@@ -169,7 +189,7 @@ export class FirestoreStore {
                 totalUsers,
                 totalToolRuns,
                 totalMemories,
-                successRate: "0%" // Placeholder
+                successRate: "N/A"
             },
             tokens: { messagesWithTokens: 0, totalTokens: 0, averagePerMessage: 0 },
             recentActivity: { sessionsLast7Days: 0, messagesLast7Days: 0 },
@@ -219,16 +239,24 @@ export class FirestoreStore {
             }
             const snapshot = await ref.orderBy('updatedAt', 'desc').limit(limit).get();
 
-            return snapshot.docs.map(doc => ({
-                id: doc.id,
-                user_id: doc.data().userId,
-                project_id: doc.data().projectId,
-                created_at: doc.data().createdAt,
-                updated_at: doc.data().updatedAt,
-                summary_text: doc.data().summary,
-                metadata: doc.data().metadata,  // Include metadata for frontend
-                messageCount: 0 // Expensive to calculate for list
-            }));
+            // Calculate message counts for each session
+            const sessionsWithCounts = await Promise.all(
+                snapshot.docs.map(async (doc) => {
+                    const messageCount = await this.countMessages(doc.id);
+                    return {
+                        id: doc.id,
+                        userId: doc.data().userId,
+                        projectId: doc.data().projectId,
+                        createdAt: doc.data().createdAt,
+                        updatedAt: doc.data().updatedAt,
+                        summary: doc.data().summary,
+                        metadata: doc.data().metadata,
+                        messageCount: messageCount
+                    };
+                })
+            );
+
+            return sessionsWithCounts;
         } catch (error) {
             console.error("Firestore listSessions error:", error);
             throw error;

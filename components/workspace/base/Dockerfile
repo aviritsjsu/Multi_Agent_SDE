@@ -18,9 +18,20 @@ RUN mkdir -p /home/coder/.config/code-server && \
     mkdir -p /home/coder/.npm && \
     chown -R 1000:1000 /home/coder
 
+RUN mkdir -p /home/coder/project && chown -R 1000:1000 /home/coder/project
+RUN mkdir -p /tmp/projects && chmod 777 /tmp/projects
+
 RUN apt update && \
     apt install -y jq python3 python3-pip python3.11-venv && \
     ln -sf /usr/bin/python3 /usr/bin/python && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install gcsfuse
+RUN export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s` && \
+    echo "deb https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | tee /etc/apt/sources.list.d/gcsfuse.list && \
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - && \
+    apt-get update && \
+    apt-get install -y gcsfuse && \
     rm -rf /var/lib/apt/lists/*
 # nvm installation moved to coder user stage
 # nvm install moved to coder user stage
@@ -35,9 +46,9 @@ RUN code-server --install-extension ms-azuretools.vscode-docker && \
     code-server --install-extension docker.docker && \
     rm -rf /home/coder/.local/share/code-server/CachedExtensionVSIXs/.trash/*
 
-RUN --mount=from=extension,target=/extension \
-    code-server --install-extension /extension/support-extension.vsix && \
-    rm -rf /home/coder/.local/share/code-server/CachedExtensionVSIXs/.trash/*
+# RUN --mount=from=extension,target=/extension \
+#     code-server --install-extension /extension/support-extension.vsix && \
+#     rm -rf /home/coder/.local/share/code-server/CachedExtensionVSIXs/.trash/*
 
 COPY --chown=1000:1000 ./config.yaml /home/coder/.config/code-server/config.yaml
 COPY --chown=1000:1000 ./settings.json /home/coder/.local/share/code-server/User/settings.json
@@ -48,4 +59,7 @@ ENV LAB_RUNNER_PUBLIC_KEY_PATH=/etc/lab-runner/public-key/runner.pem
 
 EXPOSE 8086
 
-CMD ["/home/coder/project"]
+# Start code-server, ensure projects directory exists, and open it
+# Start code-server
+# Cloud Run will mount the GCS bucket at /home/coder/project
+CMD ["code-server", "--auth", "none", "--bind-addr", "0.0.0.0:8085", "/home/coder/project"]

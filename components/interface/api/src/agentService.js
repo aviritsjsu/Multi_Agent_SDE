@@ -6,7 +6,7 @@ import { TIMEOUTS, LIMITS, PATHS } from "./constants.js";
 import { MemoryService } from "./memory/memoryService.js";
 import { uploadDirectory } from "./storageService.js";
 
-const PROJECT_DIR = "/home/coder/project/";
+const PROJECT_DIR = process.env.PROJECT_ROOT || "/tmp/projects";
 
 export class AgentService {
   constructor() {
@@ -137,13 +137,44 @@ Focus on targeted fixes rather than complete rewrites.`;
     await this.memory.saveTurn({ userId, sessionId, projectId, userMsg: task, assistantMsg: null, usage: null });
     const ctx = await this.memory.getChatContext({ userId, sessionId, projectId, query: task, limit: LIMITS.MAX_CONTEXT_MESSAGES });
 
+    // Prepend system instructions for Cloud Run environment
+    const systemInstructions = `
+IMPORTANT ENVIRONMENT INSTRUCTIONS:
+1. You are running in a Cloud Run environment where Docker daemon is NOT available.
+2. Do NOT rely on 'docker-compose up' for running the application.
+3. ALWAYS generate a 'run.sh' script that:
+   - Installs dependencies (npm install, pip install).
+   - Starts the backend and frontend locally (e.g., 'npm start & python main.py').
+   - Uses '&' to run processes in the background.
+   - Exports necessary environment variables.
+4. Still generate Dockerfiles and docker-compose.yml for portability, but 'run.sh' is the primary execution method for this environment.
+`;
+
+    enhancedTask = `${systemInstructions}\n\nUSER REQUEST:\n${enhancedTask}`;
+
+    // Create timestamped project folder upfront
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const projectFolderName = `adk-project-${timestamp}`;
+    const projectDir = path.join(PROJECT_DIR, projectFolderName);
+    fs.mkdirSync(projectDir, { recursive: true });
+    console.log(`📂 Created project directory: ${projectDir}`);
+    console.log(`🐍 Spawning Python ADK script: ${scriptPath}`);
+
     // Spawn Python process with enhanced task
     const proc = spawn("python3", [scriptPath, enhancedTask], {
       env: {
         ...process.env,
-        TARGET_FOLDER_PATH: TARGET_DIR,
+        TARGET_FOLDER_PATH: projectDir, // Use the specific project directory
         ADK_CONTEXT: JSON.stringify({ userId, sessionId, projectId, context: ctx })
       },
+    });
+
+    // Handle spawn errors (e.g., python3 not found, script not found)
+    proc.on("error", (error) => {
+      console.error("❌ Failed to spawn Python process:", error);
+      res.write(`event: error\n`);
+      res.write(`data: ${JSON.stringify({ message: `Failed to start ADK pipeline: ${error.message}` })}\n\n`);
+      res.end();
     });
 
     let buffer = "";
@@ -226,21 +257,27 @@ Focus on targeted fixes rather than complete rewrites.`;
           finalResult = [];
         }
 
-        // NOTE: output.py execution moved to AFTER pipeline completes (see below)
+        // ============================================
+        // CREATE TIMESTAMPED PROJECT FOLDER ON GCS FUSE
+        // ============================================
+        // Directory already created upfront (projectDir)
+        // const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        // const GCS_MOUNT_ROOT = process.env.PROJECT_ROOT || "/usr/local/app/generated";
+        // const projectFolderName = `adk-project-${timestamp}`;
+        // const projectDir = path.join(GCS_MOUNT_ROOT, projectFolderName);
 
-        // Save artifacts
-        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const ARTIFACTS_ROOT = path.resolve(process.cwd(), PATHS.ARTIFACTS_DIR);
-        fs.mkdirSync(ARTIFACTS_ROOT, { recursive: true });
-        const projectDir = path.join(ARTIFACTS_ROOT, `adk-project-${timestamp}`);
-        fs.mkdirSync(projectDir, { recursive: true });
+        // Create project directory on GCS FUSE mount
+        // fs.mkdirSync(projectDir, { recursive: true });
+        // console.log(`📂 Created project directory on GCS FUSE: ${projectDir}`);
 
+        // Save artifacts to the GCS FUSE mount
         if (Array.isArray(finalResult)) {
           const fileNames = ["requirements.md", "solution.md", "validation.md"];
           finalResult.forEach((content, idx) => {
             const file = fileNames[idx] || `output-${idx}.txt`;
             fs.writeFileSync(path.join(projectDir, file), content, "utf8");
           });
+          console.log(`📝 Saved ${finalResult.length} artifacts to GCS FUSE`);
         }
 
         // ============================================
@@ -248,7 +285,7 @@ Focus on targeted fixes rather than complete rewrites.`;
         // ============================================
         console.log('📦 Executing project creation...');
         try {
-          const generatedScript = path.join(TARGET_DIR, "output.py");
+          const generatedScript = path.join(projectDir, "output.py");
           if (fs.existsSync(generatedScript)) {
             const execOut = execFileSync("python3", [generatedScript], {
               encoding: "utf8",
@@ -264,26 +301,33 @@ Focus on targeted fixes rather than complete rewrites.`;
         }
 
         // ============================================
-        // UPLOAD TO GOOGLE CLOUD STORAGE
+        // UPLOAD TO GCS (Explicit upload since FUSE might not be mounted)
         // ============================================
-        let gcsUrl = null;
+        console.log(`📤 Uploading project to GCS: ${projectFolderName}`);
         try {
-          console.log(`📤 Uploading project from ${TARGET_DIR} to GCS...`);
-          const destinationPrefix = `projects/${projectId}/${timestamp}`;
-          await uploadDirectory(TARGET_DIR, destinationPrefix);
-          gcsUrl = `gs://${process.env.GCS_BUCKET_NAME || 'data298b-project-store'}/${destinationPrefix}`;
+          await uploadDirectory(projectDir, projectFolderName);
+          const gcsUrl = `gs://${process.env.GCS_BUCKET_NAME || 'data298b-project-store'}/${projectFolderName}`;
           console.log(`✅ Project uploaded to GCS: ${gcsUrl}`);
+
+          // Emit project.uploaded event for frontend download
+          res.write(`event: project.uploaded\n`);
+          res.write(`data: ${JSON.stringify({
+            projectPath: projectDir,
+            gcsPrefix: projectFolderName,
+            gcsUrl: gcsUrl
+          })}\n\n`);
         } catch (uploadError) {
-          console.error("❌ Failed to upload project to GCS:", uploadError);
-          // Log the error but don't fail the pipeline
+          console.error("Failed to upload project to GCS:", uploadError);
         }
+
+        const gcsUrl = `gs://${process.env.GCS_BUCKET_NAME || 'data298b-project-store'}/${projectFolderName}`;
 
         // ============================================
         // CLEANUP INTERMEDIATE FILES
         // ============================================
         try {
           const filesToCleanup = [
-            path.join(TARGET_DIR, "output.py"),
+            path.join(projectDir, "output.py"),
           ];
 
           for (const file of filesToCleanup) {
@@ -297,7 +341,7 @@ Focus on targeted fixes rather than complete rewrites.`;
           // Don't fail pipeline for cleanup errors
         }
 
-        // Log success
+        // Log success with GCS FUSE path
         await this.memory.saveToolRun({
           userId,
           sessionId,
@@ -308,14 +352,14 @@ Focus on targeted fixes rather than complete rewrites.`;
           success: true,
         });
 
-        const assistantSummary = `ADK stream succeeded. Artifacts at ${projectDir}. Uploaded to ${gcsUrl || 'local only'}.`;
+        const assistantSummary = `ADK stream succeeded. Project at ${projectDir} (GCS: ${gcsUrl}).`;
         await this.memory.saveTurn({ userId, sessionId, projectId, userMsg: null, assistantMsg: assistantSummary, usage: null });
 
         if (projectId) {
           await this.memory.indexMemory({
             scope: "project",
             key: `adk-stream:${timestamp}`,
-            text: `ADK stream completed. Artifacts at ${projectDir}. GCS: ${gcsUrl}. Task: ${task}`,
+            text: `ADK stream completed. Project at ${projectDir}. GCS: ${gcsUrl}. Task: ${task}`,
             meta: { files: Array.isArray(finalResult) ? finalResult.length : 0, gcsUrl },
           });
         }

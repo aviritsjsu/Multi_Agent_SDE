@@ -12,13 +12,22 @@ const INTERNAL_API_KEY = process.env.LLM_API_KEY || process.env.GOOGLE_API_KEY |
 export class Config {
   static getLLMConfig() {
     return {
-      primary: "qwen-coder", // Default to Qwen
-      fallbacks: ["codellama", "mistral", "deepseek-coder"],
+      primary: process.env.LLM_PRIMARY_PROVIDER || "vertexai",
+      fallbacks: ["vertexai"],
 
-      // Only expose the 4 fine-tuned models
       providers: {
-        "qwen-coder": {
+        "vertexai": {
           enabled: true,
+          name: "Gemini",
+          displayName: "Qwen2.5-Coder.FT",
+          model: process.env.LLM_MODEL || "gemini-3-pro-preview",
+          provider: "vertexai",
+          _internalApiKey: INTERNAL_API_KEY,
+        },
+
+        // Fine-tuned models (disabled by default unless explicitly enabled)
+        "qwen-coder": {
+          enabled: false,
           name: "Qwen2.5-Coder.FT",
           displayName: "Qwen2.5-Coder (Fine-Tuned)",
           model: "qwen2.5-coder-32b-instruct-ft",
@@ -26,12 +35,11 @@ export class Config {
           maxTokens: 4096,
           supportsTools: true,
           provider: "vertexai",
-          // Internal: uses Gemini API
           _internalApiKey: INTERNAL_API_KEY,
         },
 
         "codellama": {
-          enabled: true,
+          enabled: false,
           name: "CodeLLaMA.FT",
           displayName: "CodeLLaMA 34B (Fine-Tuned)",
           model: "codellama-34b-instruct-ft",
@@ -43,7 +51,7 @@ export class Config {
         },
 
         "mistral": {
-          enabled: true,
+          enabled: false,
           name: "Mistral.FT",
           displayName: "Mistral Large (Fine-Tuned)",
           model: "mistral-large-instruct-ft",
@@ -55,7 +63,7 @@ export class Config {
         },
 
         "deepseek-coder": {
-          enabled: true,
+          enabled: false,
           name: "DeepSeek-Coder.FT",
           displayName: "DeepSeek Coder 33B (Fine-Tuned)",
           model: "deepseek-coder-33b-instruct-ft",
@@ -70,7 +78,7 @@ export class Config {
   }
 
   static detectPrimaryProvider() {
-    return "qwen-coder"; // Always default to Qwen
+    return process.env.LLM_PRIMARY_PROVIDER || "vertexai";
   }
 
   static getServerConfig() {

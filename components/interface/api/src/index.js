@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs";
 import express from "express";
+import cors from "cors";
 import { randomUUID } from 'crypto';
 import yaml from 'yaml';
 import { WorkshopStore } from "./workshopStore.js";
@@ -12,6 +13,7 @@ import { ProjectAgent } from "./agents/projectAgent.js";
 import { verifyToken } from "./middleware/auth.js";
 import { PATHS, HTTP_STATUS, TIMEOUTS } from "./constants.js";
 import { getDatabaseHealth, closeDatabase } from "./db.js";
+import { getProjectFiles, listUserProjects } from './storageService.js';
 import dotenv from 'dotenv'
 
 dotenv.config()
@@ -36,7 +38,24 @@ try {
   console.error("Failed to initialize Multi-Agent Orchestrator:", error.message);
 }
 
+// CORS configuration - allow frontend origins
+const corsOptions = {
+  origin: [
+    'https://interface-client-835319451022.us-central1.run.app',
+    'http://localhost:5173',
+    'http://localhost:3000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+app.use(cors(corsOptions));
+
 app.use(express.json({ limit: "10mb" }));
+
+// Trust proxy - required for Cloud Run to properly identify client IPs
+app.set('trust proxy', true);
+
 
 // -----------------------------
 // 🩺 Health check (no rate limiting)
@@ -252,6 +271,46 @@ app.post("/api/adk/cancel", async (req, res) => {
 });
 
 // -----------------------------
+// Project Files Endpoint (Signed URLs)
+// -----------------------------
+app.get("/api/projects/files", async (req, res) => {
+  try {
+    const projectPrefix = req.query.prefix;
+    if (!projectPrefix) return res.status(400).json({ error: 'Project prefix required in query parameter' });
+    if (!projectPrefix) return res.status(400).json({ error: 'Project prefix required' });
+
+    const files = await getProjectFiles(projectPrefix);
+    res.json({ files });
+  } catch (error) {
+    console.error('Error getting project files:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// -----------------------------
+// Project List Endpoint
+// -----------------------------
+app.get("/api/projects/list", async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const projects = await listUserProjects(userId);
+    res.json({ projects });
+  } catch (error) {
+    console.error('Error listing projects:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// -----------------------------
+// Approvals Endpoint (Stub)
+// -----------------------------  
+app.get("/api/approvals/pending", async (req, res) => {
+  // This endpoint is not yet implemented
+  // Return empty array to stop 500 errors
+  res.json({ approvals: [] });
+});
+
+// -----------------------------
 // ADK streaming endpoint (SSE)
 // -----------------------------
 app.get("/api/adk/stream", adkLimiter, async (req, res) => {
@@ -276,10 +335,15 @@ app.get("/api/adk/stream", adkLimiter, async (req, res) => {
       }
     }
 
+    // CORS headers for SSE (must be set explicitly for EventSource)
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+
     // SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");  // Disable nginx buffering
     res.flushHeaders?.();
 
     // Heartbeat

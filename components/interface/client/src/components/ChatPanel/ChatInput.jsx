@@ -51,6 +51,9 @@ export function ChatInput() {
 
   // Fetch context files and token usage
   useEffect(() => {
+    // TODO: Re-enable when /api/chat/:sessionId/context endpoint is implemented
+    // Currently this endpoint doesn't exist and causes 404 errors
+    /*
     const fetchContext = async () => {
       if (!currentSessionId) return;
 
@@ -79,6 +82,7 @@ export function ChatInput() {
       setContextFiles([]);
       setContextSize(0);
     }
+    */
   }, [mode, currentSessionId, messages.length]); // Re-fetch when messages change
 
   // Fetch workspace files when @ is typed

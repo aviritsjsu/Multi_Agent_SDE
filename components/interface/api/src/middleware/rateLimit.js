@@ -12,6 +12,7 @@ import { RATE_LIMITS, HTTP_STATUS } from '../constants.js';
 export const apiLimiter = rateLimit({
   windowMs: RATE_LIMITS.API.WINDOW_MS,
   max: RATE_LIMITS.API.MAX_REQUESTS,
+  validate: { trustProxy: false }, // Allow trust proxy in Cloud Run
   message: {
     error: 'Too many requests from this IP',
     message: `Please try again after ${RATE_LIMITS.API.WINDOW_MS / 60000} minutes`,
@@ -30,10 +31,10 @@ export const apiLimiter = rateLimit({
   },
   skip: (req) => {
     // Skip rate limiting for health checks and frequent polling endpoints
-    return req.path === '/api/health' || 
-           req.path === '/healthz' ||
-           req.path.includes('/memory/sessions') ||
-           req.path.includes('/memory/stats');
+    return req.path === '/api/health' ||
+      req.path === '/healthz' ||
+      req.path.includes('/memory/sessions') ||
+      req.path.includes('/memory/stats');
   },
 });
 
@@ -43,6 +44,7 @@ export const apiLimiter = rateLimit({
 export const adkLimiter = rateLimit({
   windowMs: RATE_LIMITS.ADK.WINDOW_MS,
   max: RATE_LIMITS.ADK.MAX_REQUESTS,
+  validate: { trustProxy: false }, // Allow trust proxy in Cloud Run
   message: {
     error: 'ADK rate limit exceeded',
     message: `ADK operations are expensive. Please try again after ${RATE_LIMITS.ADK.WINDOW_MS / 3600000} hour(s)`,
@@ -75,6 +77,7 @@ export const adkLimiter = rateLimit({
 export const chatLimiter = rateLimit({
   windowMs: RATE_LIMITS.CHAT.WINDOW_MS,
   max: RATE_LIMITS.CHAT.MAX_REQUESTS,
+  validate: { trustProxy: false }, // Allow trust proxy in Cloud Run
   message: {
     error: 'Chat rate limit exceeded',
     message: `Too many chat messages. Please try again after ${RATE_LIMITS.CHAT.WINDOW_MS / 60000} minute(s)`,
@@ -110,6 +113,7 @@ export function createRateLimiter(config) {
   return rateLimit({
     windowMs,
     max,
+    validate: { trustProxy: false }, // Allow trust proxy in Cloud Run
     message: {
       error: 'Rate limit exceeded',
       message,
@@ -121,7 +125,7 @@ export function createRateLimiter(config) {
     keyGenerator,
     skip,
     handler: (req, res) => {
-      console.warn(`⚠️ Custom rate limit exceeded for IP: ${req.ip} on ${req.path}`);
+      console.warn(`⚠️  Custom rate limit exceeded for IP: ${req.ip} on ${req.path}`);
       res.status(HTTP_STATUS.RATE_LIMIT).json({
         error: 'Rate limit exceeded',
         message,

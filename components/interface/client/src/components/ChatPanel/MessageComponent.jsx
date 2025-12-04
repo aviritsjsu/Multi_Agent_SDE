@@ -8,7 +8,7 @@ import { toast } from "react-toastify";
 import { useChat } from "../../ChatContext";
 
 export function MessageComponent({ message, searchQuery }) {
-  const { sendMessage, setMessages, messages } = useChat();
+  const { sendMessage, setMessages, messages, projectGcsPrefix, downloadProject } = useChat();
   const [copied, setCopied] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -84,10 +84,10 @@ export function MessageComponent({ message, searchQuery }) {
   // Highlight search query in message
   const highlightText = (text) => {
     if (!searchQuery || !text) return text;
-    
+
     const parts = text.split(new RegExp(`(${searchQuery})`, 'gi'));
-    return parts.map((part, i) => 
-      part.toLowerCase() === searchQuery.toLowerCase() ? 
+    return parts.map((part, i) =>
+      part.toLowerCase() === searchQuery.toLowerCase() ?
         <mark key={i} style={{ background: '#ffeb3b', color: '#000' }}>{part}</mark> : part
     );
   };
@@ -118,7 +118,7 @@ export function MessageComponent({ message, searchQuery }) {
       const messageIndex = messages.findIndex(m => m.id === message.id);
       const updatedMessages = messages.slice(0, messageIndex);
       setMessages(updatedMessages);
-      
+
       // Send the edited message
       sendMessage(editedContent.trim());
       setIsEditing(false);
@@ -141,7 +141,7 @@ export function MessageComponent({ message, searchQuery }) {
         // Remove this and subsequent messages
         const updatedMessages = messages.slice(0, messageIndex);
         setMessages(updatedMessages);
-        
+
         // Resend the previous user message
         sendMessage(previousUserMessage.content);
         toast.info('🔄 Regenerating response...');
@@ -237,54 +237,54 @@ export function MessageComponent({ message, searchQuery }) {
           </div>
         ) : (
           <div className="message-text">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({ node, inline, className, children, ...props }) {
-                const match = /language-(\w+)/.exec(className || "");
-                const codeString = String(children).replace(/\n$/, "");
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                code({ node, inline, className, children, ...props }) {
+                  const match = /language-(\w+)/.exec(className || "");
+                  const codeString = String(children).replace(/\n$/, "");
 
-                return !inline && match ? (
-                  <div className="code-block-wrapper">
-                    <div className="code-header">
-                      <span className="language">{match[1]}</span>
-                      <Button
-                        variant="link"
-                        size="sm"
-                        onClick={() => copyToClipboard(codeString)}
-                        className="copy-btn"
+                  return !inline && match ? (
+                    <div className="code-block-wrapper">
+                      <div className="code-header">
+                        <span className="language">{match[1]}</span>
+                        <Button
+                          variant="link"
+                          size="sm"
+                          onClick={() => copyToClipboard(codeString)}
+                          className="copy-btn"
+                        >
+                          {copied ? "✅ Copied" : "📋 Copy"}
+                        </Button>
+                      </div>
+                      <SyntaxHighlighter
+                        style={vscDarkPlus}
+                        language={match[1]}
+                        PreTag="div"
+                        {...props}
                       >
-                        {copied ? "✅ Copied" : "📋 Copy"}
-                      </Button>
+                        {codeString}
+                      </SyntaxHighlighter>
                     </div>
-                    <SyntaxHighlighter
-                      style={vscDarkPlus}
-                      language={match[1]}
-                      PreTag="div"
-                      {...props}
-                    >
-                      {codeString}
-                    </SyntaxHighlighter>
-                  </div>
-                ) : (
-                  <code className={className} {...props}>
-                    {children}
-                  </code>
-                );
-              },
-              table({ children }) {
-                return (
-                  <div className="table-responsive">
-                    <table className="table table-striped table-sm">
+                  ) : (
+                    <code className={className} {...props}>
                       {children}
-                    </table>
-                  </div>
-                );
-              },
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
+                    </code>
+                  );
+                },
+                table({ children }) {
+                  return (
+                    <div className="table-responsive">
+                      <table className="table table-striped table-sm">
+                        {children}
+                      </table>
+                    </div>
+                  );
+                },
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
           </div>
         )}
 
@@ -300,8 +300,27 @@ export function MessageComponent({ message, searchQuery }) {
         {/* Message Actions */}
         {!isEditing && (
           <div className="mt-2 d-flex flex-wrap gap-1">
+            {/* Download Project Button (Always show for ADK messages) */}
+            {message.role === "assistant" && (message.provider === 'ADK' || message.content.includes("Project created") || message.content.includes("saved output.py")) && (
+              <Button
+                variant={projectGcsPrefix ? "success" : "outline-secondary"}
+                size="sm"
+                disabled={!projectGcsPrefix}
+                onClick={() => {
+                  if (projectGcsPrefix) {
+                    downloadProject(projectGcsPrefix);
+                  } else {
+                    toast.error("Project not ready for download yet");
+                  }
+                }}
+                title={projectGcsPrefix ? "Download generated project" : "Project processing..."}
+              >
+                {projectGcsPrefix ? "📥 Download Project" : "⏳ Processing..."}
+              </Button>
+            )}
+
             {/* Copy Full Message */}
-            <Button 
+            <Button
               variant="outline-secondary"
               size="sm"
               onClick={copyFullMessage}
@@ -312,7 +331,7 @@ export function MessageComponent({ message, searchQuery }) {
 
             {/* Edit & Resend (User messages only) */}
             {message.role === "user" && (
-              <Button 
+              <Button
                 variant="outline-primary"
                 size="sm"
                 onClick={handleEdit}
@@ -324,7 +343,7 @@ export function MessageComponent({ message, searchQuery }) {
 
             {/* Regenerate (Assistant messages only) */}
             {message.role === "assistant" && (
-              <Button 
+              <Button
                 variant="outline-warning"
                 size="sm"
                 onClick={regenerateMessage}
@@ -338,7 +357,7 @@ export function MessageComponent({ message, searchQuery }) {
             {message.role === "assistant" && 'speechSynthesis' in window && (
               <>
                 {!isSpeaking ? (
-                  <Button 
+                  <Button
                     variant="outline-info"
                     size="sm"
                     onClick={speakMessage}
@@ -348,7 +367,7 @@ export function MessageComponent({ message, searchQuery }) {
                   </Button>
                 ) : (
                   <>
-                    <Button 
+                    <Button
                       variant="outline-warning"
                       size="sm"
                       onClick={speakMessage}
@@ -356,7 +375,7 @@ export function MessageComponent({ message, searchQuery }) {
                     >
                       {isPaused ? '▶️' : '⏸️'}
                     </Button>
-                    <Button 
+                    <Button
                       variant="outline-danger"
                       size="sm"
                       onClick={stopSpeaking}
@@ -372,14 +391,14 @@ export function MessageComponent({ message, searchQuery }) {
             {/* Rate Response (Assistant messages only) */}
             {message.role === "assistant" && (
               <ButtonGroup size="sm">
-                <Button 
+                <Button
                   variant={rating === 'up' ? 'success' : 'outline-success'}
                   onClick={() => handleRate('up')}
                   title="Good response"
                 >
                   👍
                 </Button>
-                <Button 
+                <Button
                   variant={rating === 'down' ? 'danger' : 'outline-danger'}
                   onClick={() => handleRate('down')}
                   title="Bad response"

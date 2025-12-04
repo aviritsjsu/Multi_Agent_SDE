@@ -6,14 +6,14 @@ export class MultiAgentOrchestrator {
     this.genAI = new GoogleGenerativeAI(apiKey);
     this.agents = new Map();
     this.activeWorkflows = new Map();
-    
+
     // Initialize all specialist agents
     Object.entries(AGENT_DEFINITIONS).forEach(([type, config]) => {
       this.agents.set(type, {
         type,
         config,
-        model: this.genAI.getGenerativeModel({ 
-          model: 'gemini-2.0-flash-exp',
+        model: this.genAI.getGenerativeModel({
+          model: process.env.LLM_MODEL || 'gemini-3-pro-preview',
           systemInstruction: config.systemPrompt,
         }),
       });
@@ -25,7 +25,7 @@ export class MultiAgentOrchestrator {
    */
   async processRequest(userRequest, context = {}) {
     const workflowId = `workflow-${Date.now()}`;
-    
+
     const workflow = {
       id: workflowId,
       userRequest,
@@ -36,7 +36,7 @@ export class MultiAgentOrchestrator {
       status: 'planning',
       startedAt: new Date(),
     };
-    
+
     this.activeWorkflows.set(workflowId, workflow);
 
     try {
@@ -75,10 +75,10 @@ export class MultiAgentOrchestrator {
    */
   async createExecutionPlan(userRequest, context) {
     const orchestrator = this.agents.get(AGENT_TYPES.ORCHESTRATOR);
-    
+
     // Auto-suggest agents based on keywords
     const suggestedAgents = suggestAgents(userRequest);
-    
+
     const planningPrompt = `
 Analyze this development task and create an execution plan:
 
@@ -112,28 +112,28 @@ Return ONLY valid JSON in this exact format:
 
     const result = await orchestrator.model.generateContent(planningPrompt);
     const responseText = result.response.text();
-    
+
     // Extract JSON from response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('Orchestrator failed to create valid plan');
     }
-    
+
     const plan = JSON.parse(jsonMatch[0]);
-    
+
     // Validate and normalize agent types
     if (plan.agents) {
       plan.agents = plan.agents.map(agentTask => {
         // Normalize agent type to lowercase
         let agentType = agentTask.agent.toLowerCase();
-        
+
         // If agent type is not valid, try to find a match
         if (!AGENT_DEFINITIONS[agentType]) {
           // Try to find by name
           const matchedType = Object.entries(AGENT_DEFINITIONS).find(
             ([type, def]) => def.name.toLowerCase().includes(agentType) || agentType.includes(type)
           );
-          
+
           if (matchedType) {
             agentType = matchedType[0];
           } else {
@@ -141,14 +141,14 @@ Return ONLY valid JSON in this exact format:
             agentType = 'orchestrator';
           }
         }
-        
+
         return {
           ...agentTask,
           agent: agentType,
         };
       });
     }
-    
+
     return plan;
   }
 
@@ -157,7 +157,7 @@ Return ONLY valid JSON in this exact format:
    */
   async executeAgents(plan) {
     const results = [];
-    
+
     if (plan.execution === 'sequential') {
       // Execute agents one by one
       for (const agentTask of plan.agents) {
@@ -168,22 +168,22 @@ Return ONLY valid JSON in this exact format:
       // Execute agents in parallel (respecting dependencies)
       const executed = new Set();
       const pending = [...plan.agents];
-      
+
       while (pending.length > 0) {
         // Find agents with satisfied dependencies
         const ready = pending.filter(task =>
-          !task.dependencies || 
+          !task.dependencies ||
           task.dependencies.every(dep => executed.has(dep))
         );
-        
+
         if (ready.length === 0) {
           throw new Error('Circular dependency detected in agent plan');
         }
-        
+
         // Execute ready agents in parallel
         const promises = ready.map(task => this.executeAgent(task, results));
         const batchResults = await Promise.all(promises);
-        
+
         batchResults.forEach((result, index) => {
           results.push(result);
           executed.add(ready[index].agent);
@@ -191,7 +191,7 @@ Return ONLY valid JSON in this exact format:
         });
       }
     }
-    
+
     return results;
   }
 
@@ -220,7 +220,7 @@ Include any code, configurations, or artifacts you create.
 
     const startTime = Date.now();
     const result = await agent.model.generateContent(prompt);
-    
+
     return {
       agent: agentTask.agent,
       agentName: agent.config.name,
@@ -236,7 +236,7 @@ Include any code, configurations, or artifacts you create.
    */
   async aggregateResults(results, userRequest) {
     const orchestrator = this.agents.get(AGENT_TYPES.ORCHESTRATOR);
-    
+
     const aggregationPrompt = `
 Original user request: "${userRequest}"
 
@@ -257,7 +257,7 @@ Include:
 `;
 
     const result = await orchestrator.model.generateContent(aggregationPrompt);
-    
+
     return {
       summary: result.response.text(),
       agentOutputs: results,

@@ -1,6 +1,9 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
 import { toast } from "react-toastify";
 import { useAuth } from "./contexts/AuthContext";
+import { apiFetch, apiEventSource } from "./utils/apiClient";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
 
 const ChatContext = createContext();
 
@@ -75,11 +78,18 @@ export const ChatContextProvider = ({ children }) => {
 
   // Session management state
   const [currentSessionId, setCurrentSessionId] = useState(null);
+  const currentSessionIdRef = useRef(null); // Ref to track ID immediately to prevent race conditions
   const [sessions, setSessions] = useState([]);
   const [sessionName, setSessionName] = useState("New Chat");
   const [projectPath, setProjectPath] = useState(null); // For ADK refinement
+  const [projectGcsPrefix, setProjectGcsPrefix] = useState(null); // For project download
   const autoSaveTimeoutRef = useRef(null);
   const [isLoadingSession, setIsLoadingSession] = useState(false); // Prevent auto-save during load
+
+  // Sync ref with state
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
 
   // Load sessions from API on mount and when user changes
   useEffect(() => {
@@ -93,7 +103,7 @@ export const ChatContextProvider = ({ children }) => {
 
     try {
       // Pass the authenticated user's ID to get only their sessions
-      const response = await fetch(`/api/memory/sessions?limit=50&userId=${currentUser.uid}`);
+      const response = await apiFetch(`/api/memory/sessions?limit=50&userId=${currentUser.uid}`);
       const data = await response.json();
       const apiSessions = (data.sessions || []).map(s => {
         // Safe date formatting
@@ -178,6 +188,7 @@ export const ChatContextProvider = ({ children }) => {
     setActiveAgent(null);
     setIsLoading(false);
     setPipelineProgress({ current: 0, total: 5, percentage: 0 });
+    // Don't clear projectGcsPrefix here as user might want to download after stop
 
     if (showToast) {
       toast.warning('🛑 Generation stopped');
@@ -193,6 +204,38 @@ export const ChatContextProvider = ({ children }) => {
     };
 
     setMessages((prev) => [...prev, newMessage]);
+
+    // Ensure we have a session ID before making the API call
+    let activeSessionId = currentSessionIdRef.current; // Use ref for immediate check
+
+    if (!activeSessionId && currentUser) {
+      const tempSessionData = {
+        userId: currentUser.uid,
+        metadata: {
+          chatName: sessionName === 'New Chat' ? generateSmartTitle(userMessage) : sessionName,
+          messages: [newMessage],
+          mode: mode,
+          messageCount: 1,
+        }
+      };
+
+      try {
+        const response = await apiFetch('/api/memory/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(tempSessionData)
+        });
+        const data = await response.json();
+        activeSessionId = data.id;
+        setCurrentSessionId(activeSessionId);
+        currentSessionIdRef.current = activeSessionId; // Update ref immediately
+        if (sessionName === 'New Chat') {
+          setSessionName(generateSmartTitle(userMessage));
+        }
+      } catch (err) {
+        console.error('Failed to create session:', err);
+      }
+    }
 
     if (mode === "ask") {
       setIsLoading(true);
@@ -210,8 +253,8 @@ export const ChatContextProvider = ({ children }) => {
           taskWithContext = `Previous conversation:\n${contextHistory}\n\nCurrent request:\n${userMessage}`;
         }
 
-        const url = `/api/adk/stream?task=${encodeURIComponent(taskWithContext)}`;
-        const ev = new EventSource(url);
+        const url = `/api/adk/stream?task=${encodeURIComponent(taskWithContext)}&sessionId=${activeSessionId || ''}&userId=${currentUser?.uid || ''}&projectId=${activeSessionId || ''}`;
+        const ev = apiEventSource(url);  // Use authenticated EventSource
         sseRef.current = ev;
         setPipelineError(null);
         setPipelineProgress({ current: 0, total: 5, percentage: 0 });
@@ -367,8 +410,35 @@ export const ChatContextProvider = ({ children }) => {
           }
         });
 
-        // Handle SSE errors
+        // Handle SSE errors - improved to prevent false "Connection lost" messages
+        let streamCompleted = false;
+        ev.addEventListener("complete", () => {
+          streamCompleted = true;
+        });
+        ev.addEventListener("pipeline.complete", () => {
+          streamCompleted = true;
+        });
+
+        ev.addEventListener("project.uploaded", (e) => {
+          try {
+            const d = JSON.parse(e.data);
+            console.log('📦 Project uploaded event received:', d);
+            if (d.gcsPrefix) {
+              setProjectGcsPrefix(d.gcsPrefix);
+              if (d.projectPath) setProjectPath(d.projectPath);
+            }
+          } catch (err) {
+            console.error('Error parsing project.uploaded event:', err);
+          }
+        });
+
         ev.onerror = (err) => {
+          // Check if the stream was intentionally closed or already completed
+          if (streamCompleted || !sseRef.current || sseRef.current.readyState === EventSource.CLOSED) {
+            console.log('SSE stream closed normally');
+            return; // Normal closure, don't show error
+          }
+
           console.error('SSE error:', err);
           if (pipelineTimeoutRef.current) {
             clearTimeout(pipelineTimeoutRef.current);
@@ -392,7 +462,7 @@ export const ChatContextProvider = ({ children }) => {
 
     setIsLoading(true);
     try {
-      const response = await fetch("/api/adk/run", {
+      const response = await apiFetch("/api/adk/run", {  // Use authenticated fetch
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: userMessage }),
@@ -422,6 +492,8 @@ export const ChatContextProvider = ({ children }) => {
     setInsights([]);
     setAgentActivity([]);
     setActiveAgent(null);
+    setProjectPath(null);
+    setProjectGcsPrefix(null);
   }, []);
 
   const regenerateLastMessage = useCallback(() => {
@@ -454,18 +526,19 @@ export const ChatContextProvider = ({ children }) => {
         }
       };
 
-      let savedSessionId = currentSessionId;
+      // Use ref to check for ID even if state hasn't updated yet
+      let savedSessionId = currentSessionIdRef.current || currentSessionId;
 
-      if (currentSessionId) {
+      if (savedSessionId) {
         // Update existing session
-        await fetch(`/api/memory/sessions/${currentSessionId}`, {
+        await apiFetch(`/api/memory/sessions/${savedSessionId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(sessionData)
         });
       } else {
         // Create new session
-        const response = await fetch('/api/memory/sessions', {
+        const response = await apiFetch('/api/memory/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(sessionData)
@@ -518,7 +591,7 @@ export const ChatContextProvider = ({ children }) => {
   const deleteSession = useCallback(async (sessionId) => {
     try {
       // Delete from API
-      await fetch(`/api/memory/sessions/${sessionId}`, {
+      await apiFetch(`/api/memory/sessions/${sessionId}`, {
         method: 'DELETE'
       });
 
@@ -549,6 +622,8 @@ export const ChatContextProvider = ({ children }) => {
     setSessionName('New Chat');
     setAgentActivity([]);
     setInsights([]);
+    setProjectPath(null);
+    setProjectGcsPrefix(null);
     toast.info('🆕 New chat started');
   }, [messages, saveCurrentSession]);
 
@@ -616,7 +691,7 @@ export const ChatContextProvider = ({ children }) => {
       // Update session name in API
       const session = sessions.find(s => s.id === sessionId);
       if (session) {
-        await fetch(`/api/memory/sessions/${sessionId}`, {
+        await apiFetch(`/api/memory/sessions/${sessionId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -645,6 +720,41 @@ export const ChatContextProvider = ({ children }) => {
       toast.error('❌ Failed to rename session');
     }
   }, [sessions, currentSessionId]);
+
+  const downloadProject = useCallback(async (prefix) => {
+    if (!prefix) return;
+    const toastId = toast.loading('📦 Preparing download...');
+    try {
+      const res = await apiFetch(`/api/projects/files?prefix=${encodeURIComponent(prefix)}`);
+      if (!res.ok) throw new Error(`Failed to fetch file list: ${res.statusText}`);
+      const { files } = await res.json();
+
+      if (!files || files.length === 0) {
+        toast.update(toastId, { render: '❌ No files found in project', type: 'error', isLoading: false, autoClose: 3000 });
+        return;
+      }
+
+      const zip = new JSZip();
+      const folderName = prefix.split('/').filter(Boolean).pop() || 'project';
+
+      await Promise.all(files.map(async (file) => {
+        try {
+          const fileRes = await fetch(file.url);
+          const blob = await fileRes.blob();
+          zip.file(file.name, blob);
+        } catch (err) {
+          console.error(`Failed to download file ${file.name}:`, err);
+        }
+      }));
+
+      const content = await zip.generateAsync({ type: "blob" });
+      saveAs(content, `${folderName}.zip`);
+      toast.update(toastId, { render: '✅ Project downloaded', type: 'success', isLoading: false, autoClose: 3000 });
+    } catch (err) {
+      console.error('Download failed:', err);
+      toast.update(toastId, { render: `❌ Download failed: ${err.message}`, type: 'error', isLoading: false, autoClose: 3000 });
+    }
+  }, []);
 
   return (
     <ChatContext.Provider
@@ -678,6 +788,11 @@ export const ChatContextProvider = ({ children }) => {
         newSession,
         renameSession,
         exportConversation,
+        exportConversation,
+        projectPath,  // Expose projectPath for workspace integration
+        projectGcsPrefix, // Expose for download
+        currentUser, // Expose currentUser for components that need auth info
+        downloadProject, // Expose download function
       }}
     >
       {children}

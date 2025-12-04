@@ -16,7 +16,21 @@ ENV NODE_ENV=development
 CMD ["npm", "run", "dev"]
 
 FROM client-base AS client-build
+ARG VITE_FIREBASE_API_KEY
+ARG VITE_FIREBASE_AUTH_DOMAIN
+ARG VITE_FIREBASE_PROJECT_ID
+ARG VITE_FIREBASE_STORAGE_BUCKET
+ARG VITE_FIREBASE_MESSAGING_SENDER_ID
+ARG VITE_FIREBASE_APP_ID
+ARG VITE_WORKSPACE_URL
+ARG VITE_INTERFACE_API_URL
 RUN npm run build
+
+FROM nginx:alpine AS client-prod
+COPY --from=client-build /usr/local/app/dist /usr/share/nginx/html
+COPY client/nginx.conf.template /etc/nginx/conf.d/default.conf
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
 
 ##################################################
 #                 API STAGES                     #
@@ -84,8 +98,10 @@ RUN pip install --no-cache-dir --break-system-packages google-adk google-generat
 COPY api/src ./src
 COPY --from=client-build /usr/local/app/dist ./public
 
+#RUN chown -R 1000:1000 /usr/local/app
+
 EXPOSE 3030
-USER 1000
+# USER 1000
 
 # Start the Node API
 CMD ["node", "src/index.js"]

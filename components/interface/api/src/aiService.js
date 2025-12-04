@@ -39,13 +39,12 @@ export class AIService {
   getProviderInfo() {
     // Return hardcoded provider config (hide internal keys)
     const providers = {};
-    
+
     for (const [name, config] of Object.entries(this.config.providers)) {
       if (config.enabled) {
         providers[name] = {
           name: config.name || name,
           displayName: config.displayName || config.name || name,
-          model: config.model,
           baseURL: config.baseURL,
           supportsTools: config.supportsTools || false,
           maxTokens: config.maxTokens,
