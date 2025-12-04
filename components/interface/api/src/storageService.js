@@ -45,16 +45,13 @@ export async function getProjectFiles(projectPrefix) {
         const fileUrls = await Promise.all(files.map(async (file) => {
             if (file.name.endsWith('/')) return null; // Skip directories
 
-            // Generate signed URL
-            const [url] = await file.getSignedUrl({
-                version: 'v4',
-                action: 'read',
-                expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-            });
+            // Use proxy URL instead of signed URL to avoid signing key issues on Cloud Run
+            // The frontend will fetch from this backend endpoint, which streams from GCS
+            const proxyUrl = `/api/projects/content?path=${encodeURIComponent(file.name)}`;
 
             return {
                 name: file.name.replace(projectPrefix + '/', ''),
-                url: url
+                url: proxyUrl
             };
         }));
 
@@ -131,9 +128,53 @@ export async function listUserProjects(userId = null) {
     }
 }
 
+export async function streamFile(filePath, res) {
+    try {
+        const bucket = storage.bucket(BUCKET_NAME);
+        const file = bucket.file(filePath);
+        const [exists] = await file.exists();
+
+        if (!exists) {
+            res.status(404).json({ error: 'File not found' });
+            return;
+        }
+
+        // Set content type based on extension
+        const ext = path.extname(filePath).toLowerCase();
+        const contentTypes = {
+            '.html': 'text/html',
+            '.css': 'text/css',
+            '.js': 'application/javascript',
+            '.json': 'application/json',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.txt': 'text/plain',
+            '.md': 'text/markdown',
+            '.py': 'text/x-python',
+        };
+        res.setHeader('Content-Type', contentTypes[ext] || 'application/octet-stream');
+
+        file.createReadStream()
+            .on('error', (err) => {
+                console.error('Error streaming file:', err);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Error streaming file' });
+                }
+            })
+            .pipe(res);
+    } catch (error) {
+        console.error('Error in streamFile:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+}
+
 export default {
     uploadFile,
     uploadDirectory,
     getProjectFiles,
-    listUserProjects
+    listUserProjects,
+    streamFile
 };

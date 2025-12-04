@@ -213,6 +213,13 @@ IMPORTANT ENVIRONMENT INSTRUCTIONS:
           if (eventData.event) {
             const eventType = eventData.event;
 
+            // SKIP 'complete' event - we will send it manually after upload
+            // This prevents the frontend from closing the stream before receiving project.uploaded
+            if (eventType === 'complete') {
+              console.log('⏳ Intercepted complete event from Python - waiting for upload');
+              continue;
+            }
+
             // Remove the 'event' field from data to avoid duplication
             const { event, ...data } = eventData;
 
@@ -303,24 +310,27 @@ IMPORTANT ENVIRONMENT INSTRUCTIONS:
         // ============================================
         // UPLOAD TO GCS (Explicit upload since FUSE might not be mounted)
         // ============================================
-        console.log(`📤 Uploading project to GCS: ${projectFolderName}`);
+        // Use structured path: projects/{projectId}/{timestamp}
+        const uploadPrefix = `projects/${projectId}/${timestamp}`;
+        console.log(`📤 Uploading project to GCS: ${uploadPrefix}`);
+
         try {
-          await uploadDirectory(projectDir, projectFolderName);
-          const gcsUrl = `gs://${process.env.GCS_BUCKET_NAME || 'data298b-project-store'}/${projectFolderName}`;
+          await uploadDirectory(projectDir, uploadPrefix);
+          const gcsUrl = `gs://${process.env.GCS_BUCKET_NAME || 'data298b-project-store'}/${uploadPrefix}`;
           console.log(`✅ Project uploaded to GCS: ${gcsUrl}`);
 
           // Emit project.uploaded event for frontend download
           res.write(`event: project.uploaded\n`);
           res.write(`data: ${JSON.stringify({
             projectPath: projectDir,
-            gcsPrefix: projectFolderName,
+            gcsPrefix: uploadPrefix,
             gcsUrl: gcsUrl
           })}\n\n`);
         } catch (uploadError) {
           console.error("Failed to upload project to GCS:", uploadError);
         }
 
-        const gcsUrl = `gs://${process.env.GCS_BUCKET_NAME || 'data298b-project-store'}/${projectFolderName}`;
+        const gcsUrl = `gs://${process.env.GCS_BUCKET_NAME || 'data298b-project-store'}/${uploadPrefix}`;
 
         // ============================================
         // CLEANUP INTERMEDIATE FILES
@@ -364,8 +374,11 @@ IMPORTANT ENVIRONMENT INSTRUCTIONS:
           });
         }
 
-        // Python script already emitted 'complete' event through stderr
-        // Just close the response stream
+        // Python script 'complete' event was intercepted
+        // Now emit it manually after project upload
+        res.write(`event: complete\n`);
+        res.write(`data: ${JSON.stringify({ outputs: finalResult })}\n\n`);
+
         console.log('✅ ADK pipeline completed successfully');
         res.end();
       } catch (error) {

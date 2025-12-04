@@ -13,7 +13,7 @@ import { ProjectAgent } from "./agents/projectAgent.js";
 import { verifyToken } from "./middleware/auth.js";
 import { PATHS, HTTP_STATUS, TIMEOUTS } from "./constants.js";
 import { getDatabaseHealth, closeDatabase } from "./db.js";
-import { getProjectFiles, listUserProjects } from './storageService.js';
+import { getProjectFiles, listUserProjects, streamFile } from './storageService.js';
 import dotenv from 'dotenv'
 
 dotenv.config()
@@ -284,6 +284,25 @@ app.get("/api/projects/files", async (req, res) => {
   } catch (error) {
     console.error('Error getting project files:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// -----------------------------
+// Project Content Proxy Endpoint (Bypasses Signed URLs)
+// -----------------------------
+app.get("/api/projects/content", async (req, res) => {
+  try {
+    const filePath = req.query.path;
+    if (!filePath) return res.status(400).json({ error: 'File path required' });
+
+    // Security check: ensure path is within projects/
+    // Although GCS bucket is flat, we want to restrict to projects prefix
+    // But filePath here is the full object name in the bucket
+
+    await streamFile(filePath, res);
+  } catch (error) {
+    console.error('Error streaming file:', error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 });
 

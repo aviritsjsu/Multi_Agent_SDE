@@ -4,12 +4,12 @@ import { LLM } from '../constants.js';
 export class VertexAIProvider extends BaseLLMProvider {
   constructor(config) {
     super({
-      name: "vertexai",
-      apiKey: config.apiKey,
-      baseURL: config.baseURL,
-      model: config.model, 
-      maxTokens: config.maxTokens || 3000,
       ...config,
+      name: "vertexai",
+      apiKey: config.apiKey || config._internalApiKey,
+      baseURL: config.baseURL,
+      model: config.model,
+      maxTokens: config.maxTokens || 3000,
     });
     this.supportsTools = true;
     this.validateConfig();
